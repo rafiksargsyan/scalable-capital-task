@@ -1,0 +1,72 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  scalable-capital-task-lambda
+
+  A lambda function that is triggered on s3 upload, does some processing and publishes processed messages to an
+  SQS queue
+
+Parameters:
+  DeploymentID:
+    Type: String
+
+Globals:
+  Function:
+    Timeout: 900
+
+Resources:
+  InputBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub scalable-capital-task-input-bucket-${DeploymentID}
+
+  SyncLockTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub sync-lock-table-${DeploymentID}
+      BillingMode: 'PAY_PER_REQUEST'
+      KeySchema:
+        - AttributeName: lock_key
+          KeyType: HASH
+        - AttributeName: sort_key
+          KeyType: RANGE
+      AttributeDefinitions:
+        - AttributeName: lock_key
+          AttributeType: S
+        - AttributeName: sort_key
+          AttributeType: S
+      TimeToLiveSpecification:
+        AttributeName: expiry_time
+        Enabled: true
+
+
+  ETLFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub etl-function-${DeploymentID}
+      CodeUri: etl_lambda/
+      Handler: app.lambda_handler
+      Runtime: python3.12
+      Architectures:
+        - x86_64
+      Policies:
+        - S3ReadPolicy:
+            BucketName: !Sub scalable-capital-task-input-bucket-${DeploymentID}
+        - DynamoDBCrudPolicy:
+            TableName:
+              !Ref SyncLockTable
+      Environment:
+        Variables:
+          LOCK_TABLE: !Sub sync-lock-table-${DeploymentID}
+      Events:
+        FileCreated:
+          Type: S3
+          Properties:
+            Bucket: !Ref InputBucket
+            Events:
+              - s3:ObjectCreated:Put
+            Filter:
+              S3Key:
+                Rules:
+                  - Name: suffix
+                    Value: .csv
